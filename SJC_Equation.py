@@ -1,5 +1,5 @@
 ###########################################################
-class ConvectionLinearEq(object):
+class ConvectionLinearEq1D(object):
 ###########################################################
 # Define Linear Convection equation
 # u_t + a * u_x = 0
@@ -7,18 +7,17 @@ class ConvectionLinearEq(object):
 # f(u) = a * u, f is flux
 ###########################################################
     def __init__(self, ArtDiffuFlag):
-        self.X = None # In fact, self.X is not used in the following methods.
         self.Sol = None
         self.Flux = None
         self.A = None
         self.ArtDiffuFlag = ArtDiffuFlag
 
-    def updateSolAndFlux(self, Sol_Mat):
+    def update(self, Sol_Mat):
         self.Sol = Sol_Mat
         self.Flux = self.A * Sol_Mat
 
 ###########################################################
-    def getSolFace(self, XMesh, BCType=1):
+    def getSolFace(self, XMesh, BCType=2):
         from numpy import ones
         SolFaceL_Vec = ones((XMesh.CellNMAX+1,))
         SolFaceL_Vec[0:-1] = self.Sol[0, :]
@@ -29,8 +28,8 @@ class ConvectionLinearEq(object):
             SolFaceL_Vec[-1] = SolFaceL_Vec[0]
             SolFaceR_Vec[0] = SolFaceR_Vec[-1]
         elif BCType == 2: # Dirichlet BC
-            SolFaceL_Vec[-1] = 1.0
-            SolFaceR_Vec[0] = 1.0
+            SolFaceL_Vec[-1] = 0.0
+            SolFaceR_Vec[0] = 0.0
         else:
             exit('BC Error!')
         return SolFaceL_Vec, SolFaceR_Vec
@@ -175,23 +174,20 @@ class ConvectionLinearEq(object):
         return Epsilon_e
 
 ###########################################################
-class ConvectionNonlinearEq(ConvectionLinearEq):
+class ConvectionNonlinearEq1D(ConvectionLinearEq1D):
 ###########################################################
 # Define Nonlinear Convection equation, currently it is Burgers Equation.
 # u_t + u * u_x = 0
 # f(u) = u**2 / 2, f is flux
 ###########################################################
-    def __init__(self, X_Mat, Sol_Mat, Flag, t):
-        self.X = X_Mat
-        self.Sol = Sol_Mat
-        self.Flux = 0.5 * Sol_Mat**2
-        self.ArtDiffuFlag = Flag
-        self.time = t
+    def __init__(self, X_Mat, Sol_Mat, ArtDiffuFlag):
+        self.Sol = None
+        self.Flux = None
+        self.ArtDiffuFlag = ArtDiffuFlag
 
-    def update(self, Sol_Mat, t):
+    def update(self, Sol_Mat):
         self.Sol = Sol_Mat
         self.Flux = 0.5 * Sol_Mat**2
-        self.time = t
 
     def getFluxFluxFace(self, XMesh):
         from numpy import ones, where, isclose
@@ -217,4 +213,136 @@ class ConvectionNonlinearEq(ConvectionLinearEq):
         # f = u**2 / 2, f_x = u * u_x
         FluxDeriv_Mat = dot(Poly.getLagrangePolyDeriv(), self.Sol) * self.Sol
         return FluxDeriv_Mat
+###########################################################
+class ConvectionLinearEqPseudo2D(ConvectionLinearEq1D):
+
+    def __init__(self, ConvA, ConvB, MeshX, MeshY, PolyX, PolyY, ArtDiffuFlag):
+        self.Sol = None
+        self.Flux = None
+        self.A = ConvA
+        self.B = ConvB
+        self.MeshX = MeshX
+        self.MeshY = MeshY
+        self.PolyX = PolyX
+        self.PolyY = PolyY
+        self.ArtDiffuFlag = ArtDiffuFlag
+
+    def getdF4D(self, U4D):
+        SolDerivX4D = self.getdF4DX(U4D)
+        SolDerivY4D = self.getdF4DY(U4D)
+        dF4D = SolDerivX4D + SolDerivY4D
+        return dF4D
+
+    def getdF4DX(self, U4D):
+        from numpy import zeros
+        SolDerivX_4D_Mat = zeros(U4D.shape)
+        for j in range(U4D.shape[1]):
+            for l in range(U4D.shape[3]):
+                self.update(U4D[:, j, :, l])
+                SolDerivX_4D_Mat[:, j, :, l] = self.getdF(self.MeshX, self.PolyX)
+        return SolDerivX_4D_Mat
+
+    def getdF4DY(self, U4D):
+        from numpy import zeros
+        SolDerivY_4D_Mat = zeros(U4D.shape)
+        for i in range(U4D.shape[0]):
+            for k in range(U4D.shape[2]):
+                self.update(U4D[i, :, k, :])
+                SolDerivY_4D_Mat[i, :, k, :] = self.getdF(self.MeshY, self.PolyY)
+        return SolDerivY_4D_Mat
+
+    def RungeKutta54_LS(self, dt, U4D):
+        from numpy import zeros
+        #######################################################
+        # Reference:
+        # 1994, ...
+        #######################################################
+        # Low storage Runge-Kutta coefficients
+        CoefA_Vec = [0.0, \
+            -567301805773.0/1357537059087.0, \
+            -2404267990393.0/2016746695238.0, \
+            -3550918686646.0/2091501179385.0, \
+            -1275806237668.0/842570457699.0]
+        CoefB_Vec = [1432997174477.0/9575080441755.0, \
+            5161836677717.0/13612068292357.0, \
+            1720146321549.0/2090206949498.0, \
+            3134564353537.0/4481467310338.0, \
+            2277821191437.0/14882151754819.0]
+        CoefC_Vec = [0.0, \
+            1432997174477.0/9575080441755.0, \
+            2526269341429.0/6820363962896.0, \
+            2006345519317.0/3224310063776.0, \
+            2802321613138.0/2924317926251.0]
+        ResU = zeros(U4D.shape)
+        for Ind in range(5):
+            dF4D = self.getdF4D(U4D)
+            ResU = CoefA_Vec[Ind] * ResU - dt * (-dF4D)
+            U4D = U4D - CoefB_Vec[Ind] * ResU
+        return U4D
+
+###########################################################
+class ConvectionNonlinearEqPseudo2D(ConvectionNonlinearEq1D):
+
+    def __init__(self, MeshX, MeshY, PolyX, PolyY, ArtDiffuFlag):
+        self.Sol = None
+        self.Flux = None
+        self.MeshX = MeshX
+        self.MeshY = MeshY
+        self.PolyX = PolyX
+        self.PolyY = PolyY
+        self.ArtDiffuFlag = ArtDiffuFlag
+
+    def getdF4D(self, U4D):
+        SolDerivX4D = self.getdF4DX(U4D)
+        SolDerivY4D = self.getdF4DY(U4D)
+        dF4D = SolDerivX4D + SolDerivY4D
+        return dF4D
+
+    def getdF4DX(self, U4D):
+        from numpy import zeros
+        SolDerivX_4D_Mat = zeros(U4D.shape)
+        for j in range(U4D.shape[1]):
+            for l in range(U4D.shape[3]):
+                self.update(U4D[:, j, :, l])
+                SolDerivX_4D_Mat[:, j, :, l] = self.getdF(self.MeshX, self.PolyX)
+        return SolDerivX_4D_Mat
+
+    def getdF4DY(self, U4D):
+        from numpy import zeros
+        SolDerivY_4D_Mat = zeros(U4D.shape)
+        for i in range(U4D.shape[0]):
+            for k in range(U4D.shape[2]):
+                self.update(U4D[i, :, k, :])
+                SolDerivY_4D_Mat[i, :, k, :] = self.getdF(self.MeshY, self.PolyY)
+        return SolDerivY_4D_Mat
+
+    def RungeKutta54_LS(self, dt, U4D):
+        from numpy import zeros
+        #######################################################
+        # Reference:
+        # 1994, ...
+        #######################################################
+        # Low storage Runge-Kutta coefficients
+        CoefA_Vec = [0.0, \
+            -567301805773.0/1357537059087.0, \
+            -2404267990393.0/2016746695238.0, \
+            -3550918686646.0/2091501179385.0, \
+            -1275806237668.0/842570457699.0]
+        CoefB_Vec = [1432997174477.0/9575080441755.0, \
+            5161836677717.0/13612068292357.0, \
+            1720146321549.0/2090206949498.0, \
+            3134564353537.0/4481467310338.0, \
+            2277821191437.0/14882151754819.0]
+        CoefC_Vec = [0.0, \
+            1432997174477.0/9575080441755.0, \
+            2526269341429.0/6820363962896.0, \
+            2006345519317.0/3224310063776.0, \
+            2802321613138.0/2924317926251.0]
+        ResU = zeros(U4D.shape)
+        for Ind in range(5):
+            dF4D = self.getdF4D(U4D)
+            ResU = CoefA_Vec[Ind] * ResU - dt * (-dF4D)
+            U4D = U4D - CoefB_Vec[Ind] * ResU
+        return U4D
+
 
